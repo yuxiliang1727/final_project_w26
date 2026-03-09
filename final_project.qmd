@@ -1,183 +1,255 @@
 ---
-title: "Interest Rate, Bond Duration, and Bond Market Sensitivity"
-author: 
-  - Lisa Liang (yl783)
-  - Siwei Chen (siweichen)
-format: pdf
+title: "Interest Rate and Bond Market Sensitivity"
+format:
+  pdf:
+    toc: false
+fontsize: 10pt
+geometry: margin=0.7in
 execute:
+  echo: false
   warning: false
   message: false
 ---
 
-# Introduction
+**Group members:** Lisa Liang (yl783, GitHub: yuxiliang1727); Siwei Chen (siweichen, GitHub: siweichen)  
+**Lecture section:** REPLACE WITH YOUR ACTUAL DAY/TIME
 
-Monetary policy changes, particularly adjustments to the **Federal Funds Rate**, influence financial markets through multiple channels. One of the most direct channels is the **bond market**, where bond prices respond to changes in interest rates.
+## Research Question
 
-This project examines:
+Our project asks how changes in the **Federal Funds Rate** influence bond returns across different fixed-income assets, especially corporate bonds and Treasury Inflation-Protected Securities (TIPS). This question is relevant to public policy because monetary tightening can change asset valuations, increase portfolio risk, and create financial stability concerns for institutions that hold large bond portfolios. We are especially interested in whether **duration and maturity** amplify a bond’s sensitivity to changes in interest rates.
 
-> **How do changes in the Federal Funds Rate influence bond returns across bonds, Treasury securities, and TIPS?**
+## Approach and Coding
 
-The analysis focuses on how **bond duration and maturity amplify interest rate risk**, and identifies which segments of the bond market are most sensitive to monetary tightening.
+We combine three datasets: a WRDS bond returns dataset, a monthly interest rate dataset that includes the Federal Funds Rate, and a Treasury/TIPS dataset. In Python, we used `pandas`, `numpy`, and `altair` in our Streamlit app to clean the data, standardize variable names, convert dates to a common monthly time index, and merge the datasets. We then computed the monthly change in the Federal Funds Rate and created duration and maturity buckets so that we could compare short- and long-duration securities.
 
-Understanding these relationships is important for **public policy and financial stability**, since large rate changes can create significant valuation shifts across financial institutions holding fixed-income assets.
-
----
-
-# Data
-
-This project combines **three datasets**.
-
-## 1. WRDS Bond Returns Dataset
-
-Source: WRDS Bond Returns (Beta)
-
-This dataset contains detailed bond-level information including:
-
-- bond prices
-- yields
-- duration
-- maturity
-- credit ratings
-- returns
-
-The dataset is highly disaggregated and contains **individual security-level observations**.
-
----
-
-## 2. Interest Rate Dataset
-
-Source: Federal Reserve / WRDS rates monthly dataset.
-
-Key variables include:
-
-- Federal Funds Rate
-- Treasury yield curve measures
-- monthly interest rate changes
-
-These variables allow us to measure **monetary policy shocks**.
-
----
-
-## 3. Treasury / TIPS Dataset
-
-Source: CRSP Treasury Securities Database.
-
-Variables include:
-
-- Treasury yields
-- duration
-- maturity
-- bond returns
-
-This dataset allows comparison between **nominal bonds and inflation-protected securities (TIPS)**.
-
----
-
-# Load Packages
+Our coding approach mirrors the structure of the Streamlit app. First, we built helper functions to clean numeric variables and convert dates to month-level timestamps. Then we created a preprocessing function that merges the interest rate data with both the WRDS bond data and the TIPS data. Finally, we produced four visualizations that summarize how monetary policy changes are associated with bond returns. One difficulty was that the datasets used different variable names and date formats, and the large size of the WRDS bond file also made filtering and plotting more computationally expensive. Another weakness is that our analysis is descriptive rather than causal: it documents relationships between rate changes and bond returns, but it does not isolate the causal effect of Federal Reserve announcements.
 
 ```{python}
 import pandas as pd
 import numpy as np
-import altair as alt
+import matplotlib.pyplot as plt
 
-bonds = pd.read_csv("data/wrds_bond_returns.csv")
-rates = pd.read_csv("data/rates_monthly.csv")
-tips = pd.read_csv("data/tips.csv")
+plt.rcParams["figure.dpi"] = 140
+plt.rcParams["axes.titlesize"] = 10
+plt.rcParams["axes.labelsize"] = 9
+plt.rcParams["xtick.labelsize"] = 8
+plt.rcParams["ytick.labelsize"] = 8
+plt.rcParams["legend.fontsize"] = 7
 
-bonds.columns = [c.lower() for c in bonds.columns]
-rates.columns = [c.lower() for c in rates.columns]
-tips.columns = [c.lower() for c in tips.columns]
+def month_floor(d):
+    dt = pd.to_datetime(d, errors="coerce")
+    return dt.dt.to_period("M").dt.to_timestamp()
 
-bonds["month"] = pd.to_datetime(bonds["date"]).dt.to_period("M").dt.to_timestamp()
-rates["month"] = pd.to_datetime(rates["date"]).dt.to_period("M").dt.to_timestamp()
-tips["month"] = pd.to_datetime(tips["tdatdt"]).dt.to_period("M").dt.to_timestamp()
+def to_numeric_clean(series):
+    return pd.to_numeric(
+        series.astype(str)
+              .str.replace("%", "", regex=False)
+              .str.replace(",", "", regex=False)
+              .str.strip(),
+        errors="coerce"
+    )
+
+# Load data
+bonds_raw = pd.read_csv("data/wrds_bond_returns.csv")
+rates_raw = pd.read_csv("data/rates_monthly.csv")
+tips_raw = pd.read_csv("data/tips.csv")
+
+bonds_raw.columns = [c.strip().lower() for c in bonds_raw.columns]
+rates_raw.columns = [c.strip().lower() for c in rates_raw.columns]
+tips_raw.columns = [c.strip().lower() for c in tips_raw.columns]
+
+# Preprocess rates
+rates = rates_raw.copy()
+rates["date"] = pd.to_datetime(rates["date"], errors="coerce")
+rates["month"] = month_floor(rates["date"])
+
+for col in ["fedfunds", "gs1", "gs5", "gs10"]:
+    if col in rates.columns:
+        rates[col] = to_numeric_clean(rates[col])
 
 rates = rates.sort_values("month")
 rates["d_ffr"] = rates["fedfunds"].diff()
 
-rates_core = rates[["month","fedfunds","d_ffr"]]
+keep = ["month", "fedfunds", "d_ffr"]
+for c in ["gs1", "gs5", "gs10"]:
+    if c in rates.columns:
+        keep.append(c)
 
-bonds_core = bonds[[
-    "month",
-    "issue_id",
-    "bond_type",
-    "duration",
-    "tmt",
-    "yield",
-    "price_eom",
-    "ret_eom"
-]].copy()
+rates_core = rates[keep].copy()
+
+# Preprocess bonds
+bonds = bonds_raw.copy()
+bonds["date"] = pd.to_datetime(bonds.get("date"), errors="coerce")
+bonds["t_date"] = pd.to_datetime(bonds.get("t_date"), errors="coerce")
+bonds["month"] = month_floor(bonds["date"].fillna(bonds["t_date"]))
+
+for col in ["duration", "tmt", "yield", "price_eom", "ret_eom", "t_spread", "t_volume", "t_dvolume"]:
+    if col in bonds.columns:
+        bonds[col] = to_numeric_clean(bonds[col])
+
+bonds_core = bonds[[c for c in [
+    "month", "issue_id", "cusip", "bond_type", "rating_class",
+    "duration", "tmt", "yield", "price_eom", "ret_eom",
+    "t_spread", "t_volume", "t_dvolume"
+] if c in bonds.columns]].copy()
 
 df = bonds_core.merge(rates_core, on="month", how="left")
 
-tips_std = pd.DataFrame({
-    "month": tips["month"],
-    "bond_type": "TIPS",
-    "duration": tips["tmduratn"],
-    "yield": tips["tmyld"],
-    "ret_eom": tips["tmretnua"]
-})
+df["regime"] = np.select(
+    [df["d_ffr"] > 0, df["d_ffr"] < 0],
+    ["Tightening (ΔFFR>0)", "Easing (ΔFFR<0)"],
+    default="No change"
+)
 
-tips_std = tips_std.merge(rates_core, on="month", how="left")
 
-df = pd.concat([df, tips_std], ignore_index=True)
+# Add TIPS
+tips = tips_raw.copy()
+tips["tdatdt"] = pd.to_datetime(tips.get("tdatdt"), errors="coerce")
+tips["month"] = month_floor(tips["tdatdt"])
+
+for col in ["tmduratn", "tmyld", "tmretnua", "tmretnxs", "tmnomprc"]:
+    if col in tips.columns:
+        tips[col] = to_numeric_clean(tips[col])
+
+ret_col = "tmretnua" if "tmretnua" in tips.columns else ("tmretnxs" if "tmretnxs" in tips.columns else None)
+
+if ret_col is not None:
+    tips_std = pd.DataFrame({
+        "month": tips["month"],
+        "issue_id": tips["kycrspid"] if "kycrspid" in tips.columns else np.nan,
+        "cusip": tips["tcusip"] if "tcusip" in tips.columns else np.nan,
+        "bond_type": "TIPS",
+        "rating_class": np.nan,
+        "duration": tips["tmduratn"],
+        "tmt": np.nan,
+        "yield": tips["tmyld"],
+        "ret_eom": tips[ret_col],
+        "price_eom": tips["tmnomprc"] if "tmnomprc" in tips.columns else np.nan,
+    })
+
+    tips_std = tips_std.merge(rates_core, on="month", how="left")
+    df = pd.concat([df, tips_std], ignore_index=True)
+
+df["regime"] = np.select(
+    [df["d_ffr"] > 0, df["d_ffr"] < 0],
+    ["Tightening (ΔFFR>0)", "Easing (ΔFFR<0)"],
+    default="No change"
+)
+
+
+# Filters + buckets
+df = df.dropna(subset=["month"])
+
+if "price_eom" in df.columns:
+    df = df[df["price_eom"].isna() | (df["price_eom"] > 0)]
+
+if "duration" in df.columns:
+    df["duration"] = df["duration"].where(df["duration"] > 0)
+if "tmt" in df.columns:
+    df["tmt"] = df["tmt"].where(df["tmt"] > 0)
+
+# scale returns if they appear to be in percent already
+if df["ret_eom"].dropna().abs().median() > 1:
+    df["ret_eom"] = df["ret_eom"] / 100
 
 df["dur_bucket"] = pd.cut(
     df["duration"],
-    bins=[-np.inf,2,5,8,12,np.inf],
-    labels=["<=2","2-5","5-8","8-12","12+"]
+    bins=[-np.inf, 2, 5, 8, 12, np.inf],
+    labels=["<=2", "2–5", "5–8", "8–12", "12+"],
 )
 
-alt.Chart(df.sample(10000)).mark_circle(opacity=0.3).encode(
-    x="duration",
-    y="ret_eom",
-    color="bond_type"
-).properties(
-    title="Bond Duration vs Monthly Returns"
+df["tmt_bucket"] = pd.cut(
+    df["tmt"],
+    bins=[-np.inf, 1, 3, 7, 15, np.inf],
+    labels=["<=1y", "1–3y", "3–7y", "7–15y", "15y+"],
 )
 
-ts = (
-    df.dropna(subset=["dur_bucket"])
-      .groupby(["month","dur_bucket"])
-      .ret_eom.mean()
-      .reset_index()
+# mimic the default Streamlit filtering choices
+f = df.copy()
+f = f[(f["tmt"].isna()) | (f["tmt"] <= 40)]
+f = f[(f["duration"].isna()) | (f["duration"] <= 25)]
+```
+
+## Visualization 1
+
+```{python}
+scatter_df = f.dropna(subset=["duration", "ret_eom", "bond_type"]).copy()
+if len(scatter_df) > 8000:
+    scatter_df = scatter_df.sample(8000, random_state=42)
+
+fig, ax = plt.subplots(figsize=(5.7, 2.8))
+for name, g in scatter_df.groupby("bond_type"):
+    ax.scatter(g["duration"], g["ret_eom"], s=6, alpha=0.25, label=name)
+
+ax.set_title("Duration vs. Monthly Return")
+ax.set_xlabel("Duration")
+ax.set_ylabel("Monthly return")
+ax.legend(loc="best", ncol=2)
+plt.tight_layout()
+plt.show()
+```
+This graph shows the relationship between bond duration and monthly bond returns. Each point represents an observation of a bond, and the color indicates different types of bonds. The graph indicates that bonds with shorter durations tend to have more volatile returns, while those with longer durations have returns that are more concentrated around zero. This visualization helps illustrate the possible relationship between duration and bond return behavior, which is at the core of our research question regarding the sensitivity of bonds to changes in interest rates.
+
+## Visualization 2
+
+```{python}
+tight = f[(f["d_ffr"] > 0) & f["dur_bucket"].notna() & f["ret_eom"].notna()].copy()
+
+if "rating_class" in tight.columns and tight["rating_class"].notna().any():
+    heat_df = (
+        tight.groupby(["dur_bucket", "rating_class"], observed=True)
+        .agg(mean_ret=("ret_eom", "mean"), n=("ret_eom", "size"))
+        .reset_index()
+    )
+
+    pivot = heat_df.pivot(index="rating_class", columns="dur_bucket", values="mean_ret")
+
+    fig, ax = plt.subplots(figsize=(5.7, 2.4))
+    im = ax.imshow(pivot.values, aspect="auto")
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels([str(c) for c in pivot.columns])
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels([str(i) for i in pivot.index])
+    ax.set_title("Mean Returns During Tightening Periods")
+    ax.set_xlabel("Duration bucket")
+    ax.set_ylabel("Rating class")
+    fig.colorbar(im, ax=ax, shrink=0.8)
+    plt.tight_layout()
+    plt.show()
+
+```
+
+This heat map presents the average bond returns for different time period groups during the period of monetary tightening. The vertical axis represents the bond rating categories, while the horizontal axis shows the time period categories. The graph indicates that during the tightening period, the performance of bonds in different time period groups and rating categories varies, suggesting that both the time period and credit quality may affect the bond's response to rising interest rates.
+
+## Visualization 3
+
+```{python}
+bubble_temp = f.dropna(subset=["month", "d_ffr", "ret_eom", "tmt_bucket"]).copy()
+bubble_temp = bubble_temp[bubble_temp["tmt_bucket"].notna()]
+
+bubble_base_df = (
+    bubble_temp
+    .groupby(["month", "tmt_bucket"], observed=True)
+    .agg(
+        avg_ret=("ret_eom", "mean"),
+        avg_dffr=("d_ffr", "mean"),
+        n=("ret_eom", "size")
+    )
+    .reset_index()
 )
 
-alt.Chart(ts).mark_line().encode(
-    x="month:T",
-    y="ret_eom",
-    color="dur_bucket"
-).properties(
-    title="Average Bond Returns by Duration Bucket"
-)
+fig, ax = plt.subplots(figsize=(5.7, 2.8))
+for bucket, g in bubble_base_df.groupby("tmt_bucket"):
+    ax.scatter(g["avg_dffr"], g["avg_ret"], s=np.minimum(g["n"] * 2, 120), alpha=0.45, label=str(bucket))
 
-heat = (
-    df[df["d_ffr"]>0]
-      .groupby(["dur_bucket","bond_type"])
-      .ret_eom.mean()
-      .reset_index()
-)
+ax.set_title("Monthly ΔFFR vs. Average Bond Return")
+ax.set_xlabel("Monthly change in Federal Funds Rate")
+ax.set_ylabel("Average monthly return")
+ax.legend(title="Maturity", ncol=3)
+plt.tight_layout()
+plt.show()
 
-alt.Chart(heat).mark_rect().encode(
-    x="dur_bucket",
-    y="bond_type",
-    color="ret_eom"
-).properties(
-    title="Bond Returns During Tightening Periods"
-)
+```
 
-bubble = (
-    df.dropna(subset=["d_ffr"])
-      .groupby(["month","bond_type"])
-      .agg(avg_ret=("ret_eom","mean"),
-           d_ffr=("d_ffr","mean"))
-      .reset_index()
-)
-
-alt.Chart(bubble).mark_circle(size=80).encode(
-    x="d_ffr",
-    y="avg_ret",
-    color="bond_type"
-).properties(
-    title="Interest Rate Changes vs Bond Returns"
-)
+This figure shows the relationship between monthly changes in the Federal Funds Rate (ΔFFR) and average bond returns. The x-axis represents the monthly change in the Federal Funds Rate, while the y-axis shows average monthly bond returns. Different colors represent different maturity intervals, and the size of each circle reflects the quantity of the corresponding group of bonds. Thus, this visual chart can not only display the maturity structure of the bonds but also show the relative scale of each group.
+The chart indicates that when interest rates change, the returns of bonds with different maturities will vary. Although this relationship is not completely linear, the chart clearly shows that different parts of the bond market may respond differently to changes in interest rates.
